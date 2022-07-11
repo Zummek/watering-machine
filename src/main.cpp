@@ -1,30 +1,47 @@
 #include <Arduino.h>
 #include <Ewma.h>
 #include <NoDelay.h>
+#include "AppWifi.h"
 
-#define SOIL_SENSOR_DIGITAL_PIN 2
-#define SOIL_SENSOR_ANALOG_PIN A7
-#define BUZZER_PIN 5
-#define WATER_PUMP_PIN 4
+#define SOIL_SENSOR_DIGITAL_PIN D0
+#define SOIL_SENSOR_ANALOG_PIN A0
+#define BUZZER_PIN D1
+#define WATER_PUMP_PIN D2
 
 #define SOIL_SENSOR_THRESHOLD 625 // 540
 #define DELAY_AFTER_WATTERING_IN_MINUTES 60
 #define DELAY_BETWEEN_MEASUREMENTS_IN_SECONDS 5
+#define DELAY_BETWEEN_SHEET_LOG_IN_MINUTES 1
 #define REQUIRED_MEASURING_SAMPLE 10
 
 void _waterGround();
+void _sheetLog();
 void forcePumpChange();
+
+bool watteringRequired;
+int soilMoistureRAW, soilMoisture;
 
 Ewma soilMoistureFilter(0.1);
 int soilMeasuringSampleNumber = 0;
 volatile int forcePumpLastUseMillis = 0;
 noDelay waterGroundDelayFn(0, _waterGround); // set delay in function
+noDelay sheetLogDelayFn(1000UL * 60 * DELAY_BETWEEN_SHEET_LOG_IN_MINUTES, _sheetLog, true);
 
 void setup() {
   Serial.begin(115200);
+  Serial.println();
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
   pinMode(SOIL_SENSOR_DIGITAL_PIN, INPUT);
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(WATER_PUMP_PIN, OUTPUT);
+
+  AppWiFi::initWiFi();
+  AppWiFi::checkWiFiConnection();
+
+  Serial.println("Starting...\n");
+  delay(2000);
+  digitalWrite(LED_BUILTIN, HIGH);
 }
 
 void _waterGround() {
@@ -53,10 +70,15 @@ void _waterGround() {
   waterGroundDelayFn.setdelay(1000UL * 60 * DELAY_AFTER_WATTERING_IN_MINUTES);
 }
 
+void _sheetLog() {
+  AppWiFi::sendDataToGoogleScript("appendRow", "" + String(watteringRequired == 0 ? "" : "1") + ";" + String(soilMoistureRAW) + ";" + String(soilMoisture));
+}
+
 void loop() {
-  const bool watteringRequired = digitalRead(SOIL_SENSOR_DIGITAL_PIN); // digital == 1 trzeba podlać
-  const int soilMoistureRAW = analogRead(SOIL_SENSOR_ANALOG_PIN);
-  const int soilMoisture = soilMoistureFilter.filter(soilMoistureRAW);
+  digitalWrite(LED_BUILTIN, LOW);
+  watteringRequired = digitalRead(SOIL_SENSOR_DIGITAL_PIN); // digital == 1 trzeba podlać
+  soilMoistureRAW = analogRead(SOIL_SENSOR_ANALOG_PIN);
+  soilMoisture = soilMoistureFilter.filter(soilMoistureRAW);
   Serial.print("Digital: ");
   Serial.print(watteringRequired);
   Serial.print(", Analog: ");
@@ -72,10 +94,14 @@ void loop() {
     return;
   }
 
+  digitalWrite(LED_BUILTIN, HIGH);
+
   if (soilMoisture > SOIL_SENSOR_THRESHOLD && watteringRequired) {
+    AppWiFi::sendDataToGoogleScript("appendRow", "" + String(watteringRequired == 0 ? "" : "1") + ";" + String(soilMoistureRAW) + ";" + String(soilMoisture) + ";100");
     waterGroundDelayFn.update();
   }
   else {
+    sheetLogDelayFn.update();
     delay(1000UL * DELAY_BETWEEN_MEASUREMENTS_IN_SECONDS);
   }
 }
